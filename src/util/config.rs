@@ -10,7 +10,10 @@ use color_eyre::{Help, Report};
 use serde::{Deserialize, Serialize};
 
 use super::arguments::Cli;
-use crate::{util::arguments::SelectionPreference, wallpaper::Wallpaper, Template};
+use crate::{
+    color::base16::Harmonization, util::arguments::SelectionPreference, wallpaper::Wallpaper,
+    Template,
+};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
@@ -28,6 +31,9 @@ pub struct Config {
     pub fallback_color: Option<String>,
     pub prefer: Option<SelectionPreference>,
     pub contrast: Option<f64>,
+    /// Strength of hue blending for base16 accent colors toward the Material
+    /// You source color. CLI flag takes precedence when both are set.
+    pub base16_harmonize: Option<Harmonization>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
