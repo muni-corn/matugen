@@ -14,7 +14,7 @@ use indexmap::IndexMap;
 use material_colors::{
     color::Argb,
     hct::Hct,
-    palette::TonalPalette,
+    scheme::Scheme,
     theme::Theme,
     utils::math::{difference_degrees, rotate_direction, sanitize_degrees_double},
 };
@@ -101,24 +101,27 @@ fn apply_harmonization(accent: Argb, source: Argb, harmonization: &Harmonization
 
 pub fn generate_base16_scheme_from_palette(
     palette: &[Rgb],
-    neutral: Option<&TonalPalette>,
+    material_scheme: Option<&Scheme>,
     source_color: Option<Argb>,
     harmonization: &Harmonization,
     dark: bool,
 ) -> Result<IndexMap<String, Argb>, Report> {
     let mut scheme = IndexMap::new();
 
-    // gray ramp: prefer the Material You neutral tonal palette when available
-    // so that the steps are perceptually uniform and source-color-tinted
-    let gray_ramp = match neutral {
-        Some(pal) => grays_from_tonal_palette(pal, dark),
-        None => {
-            let mut sorted = palette.to_vec();
-            sorted.sort_by(|a, b| luminance(b).partial_cmp(&luminance(a)).unwrap());
-            let base00 = sorted.first().unwrap().clone();
-            let base05 = sorted.last().unwrap().clone();
-            interpolate_grays(&base00, &base05, dark)
-        }
+    // gray ramp: prefer the Material You primary/secondary swatch colors so
+    // the ramp matches the palette the user sees in Material You output.
+    // Falls back to linear RGB interpolation when no theme is available.
+    let (base00, base05) = if let Some(s) = material_scheme {
+        let base00 = s.on_primary_fixed;
+        let base05 = s.primary_fixed;
+
+        (rgb_from_argb(base00), rgb_from_argb(base05))
+    } else {
+        let mut sorted = palette.to_vec();
+        sorted.sort_by(|a, b| luminance(b).partial_cmp(&luminance(a)).unwrap());
+        let base00 = sorted.first().unwrap().clone();
+        let base05 = sorted.last().unwrap().clone();
+        (base00, base05)
     };
 
     for (i, &name) in GRAY_NAMES.iter().enumerate() {
@@ -352,23 +355,6 @@ fn interpolate_grays(base00: &Rgb, base05: &Rgb, dark: bool) -> Vec<Argb> {
     grays
 }
 
-/// Builds the 8-step gray ramp (base00–base07) from a Material You neutral
-/// tonal palette using perceptually-uniform HCT tones.
-///
-/// Dark theme tones run from near-black (6) to near-white (96), covering the
-/// full range editors need for backgrounds, comments, and foregrounds.
-/// Light theme tones are the mirror image.
-fn grays_from_tonal_palette(neutral: &TonalPalette, dark: bool) -> Vec<Argb> {
-    // tone values chosen to give clearly-distinct steps in a typical editor
-    let tones: [i32; 8] = if dark {
-        [6, 10, 16, 28, 55, 80, 90, 96]
-    } else {
-        [98, 93, 88, 73, 45, 20, 10, 4]
-    };
-
-    tones.iter().map(|&t| neutral.tone(t)).collect()
-}
-
 pub fn generate_base16_schemes(
     source: &Source,
     backend: Backend,
@@ -408,13 +394,25 @@ pub fn generate_base16_schemes_from_image(
     harmonization: &Harmonization,
 ) -> Result<Schemes, Report> {
     let palette = backend.create().extract(image);
-    let neutral = theme.map(|t| &t.palettes.neutral);
     let source_color = theme.map(|t| t.source);
 
-    let dark_scheme =
-        generate_base16_scheme_from_palette(&palette, neutral, source_color, harmonization, true)?;
-    let light_scheme =
-        generate_base16_scheme_from_palette(&palette, neutral, source_color, harmonization, false)?;
+    let dark_swatch = theme.map(|t| &t.schemes.dark);
+    let dark_scheme = generate_base16_scheme_from_palette(
+        &palette,
+        dark_swatch,
+        source_color,
+        harmonization,
+        true,
+    )?;
+
+    let light_swatch = theme.map(|t| &t.schemes.light);
+    let light_scheme = generate_base16_scheme_from_palette(
+        &palette,
+        light_swatch,
+        source_color,
+        harmonization,
+        false,
+    )?;
 
     Ok(Schemes {
         dark: dark_scheme,
