@@ -1,6 +1,6 @@
 use crate::{
     color::{
-        base16::{generate_base16_schemes, Backend},
+        base16::{generate_base16_schemes, Backend, Harmonization},
         color::{get_source_color, Source},
         format::argb_from_rgb,
         parse::parse_css_color,
@@ -129,6 +129,13 @@ pub fn generate_schemes_and_theme(
         None => (None, None),
     };
 
+    // CLI flag takes precedence; fall back to config file value; then default.
+    let harmonization: Harmonization = args
+        .base16_harmonize
+        .clone()
+        .or_else(|| config_file.config.base16_harmonize.clone())
+        .unwrap_or_default();
+
     let base_16 = match &args.source {
         Source::Json { path: _ } => None,
         _ => Some(
@@ -136,9 +143,7 @@ pub fn generate_schemes_and_theme(
                 &args.source,
                 args.base16_backend.clone().unwrap_or(Backend::Wal),
                 theme.as_ref(),
-                // harmonization will be wired from CLI/config in a later commit;
-                // default to Light for now
-                &Default::default(),
+                &harmonization,
             )
             .wrap_err("Failed to generate base16 color schemes.")?,
         ),
