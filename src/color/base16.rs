@@ -1,5 +1,7 @@
 
 
+
+
 use crate::{
     color::{
         backend::{celebi::CelebiBackend, wal::WalBackend},
@@ -16,6 +18,8 @@ use indexmap::IndexMap;
 use material_colors::{
     color::Argb,
     hct::Hct,
+    palette::TonalPalette,
+    theme::Theme,
     utils::math::{difference_degrees, rotate_direction, sanitize_degrees_double},
 };
 use serde::{Deserialize, Serialize};
@@ -74,24 +78,29 @@ fn drag_hue(source_hue: f64, target_hue: f64, amount: f64) -> f64 {
 
 pub fn generate_base16_scheme_from_palette(
     palette: &[Rgb],
+    neutral: Option<&TonalPalette>,
     dark: bool,
 ) -> Result<IndexMap<String, Argb>, Report> {
     let mut scheme = IndexMap::new();
 
-    let mut sorted = palette.to_vec();
-    sorted.sort_by(|a, b| luminance(b).partial_cmp(&luminance(a)).unwrap());
+    // gray ramp: prefer the Material You neutral tonal palette when available
+    // so that the steps are perceptually uniform and source-color-tinted
+    let gray_ramp = match neutral {
+        Some(pal) => grays_from_tonal_palette(pal, dark),
+        None => {
+            let mut sorted = palette.to_vec();
+            sorted.sort_by(|a, b| luminance(b).partial_cmp(&luminance(a)).unwrap());
+            let base00 = sorted.first().unwrap().clone();
+            let base05 = sorted.last().unwrap().clone();
+            interpolate_grays(&base00, &base05, dark)
+        }
+    };
 
-    let base00 = sorted.first().unwrap();
-    let base05 = sorted.last().unwrap();
-
-    scheme.insert("base00".to_string(), argb_from_rgb(base00));
-    scheme.insert("base05".to_string(), argb_from_rgb(base05));
-
-    let gray_ramp = interpolate_grays(base00, base05, dark);
     for (i, &name) in GRAY_NAMES.iter().enumerate() {
         scheme.insert(name.to_string(), gray_ramp[i]);
     }
 
+    let sorted = palette.to_vec();
     let mut accents: Vec<&Rgb> = sorted.iter().collect();
     accents.sort_by(|a, b| saturation(a).partial_cmp(&saturation(b)).unwrap());
 
@@ -174,7 +183,28 @@ fn interpolate_grays(base00: &Rgb, base05: &Rgb, dark: bool) -> Vec<Argb> {
     grays
 }
 
-pub fn generate_base16_schemes(source: &Source, backend: Backend) -> Result<Schemes, Report> {
+/// Builds the 8-step gray ramp (base00–base07) from a Material You neutral
+/// tonal palette using perceptually-uniform HCT tones.
+///
+/// Dark theme tones run from near-black (6) to near-white (96), covering the
+/// full range editors need for backgrounds, comments, and foregrounds.
+/// Light theme tones are the mirror image.
+fn grays_from_tonal_palette(neutral: &TonalPalette, dark: bool) -> Vec<Argb> {
+    // tone values chosen to give clearly-distinct steps in a typical editor
+    let tones: [i32; 8] = if dark {
+        [6, 10, 16, 28, 55, 80, 90, 96]
+    } else {
+        [98, 93, 88, 73, 45, 20, 10, 4]
+    };
+
+    tones.iter().map(|&t| neutral.tone(t)).collect()
+}
+
+pub fn generate_base16_schemes(
+    source: &Source,
+    backend: Backend,
+    theme: Option<&Theme>,
+) -> Result<Schemes, Report> {
     let schemes = match source {
         Source::Json { path: _ } => unreachable!(),
         Source::Image { path } => {
@@ -182,7 +212,7 @@ pub fn generate_base16_schemes(source: &Source, backend: Backend) -> Result<Sche
                 .with_guessed_format()?
                 .decode()?
                 .to_rgb8();
-            generate_base16_schemes_from_image(&image, backend).wrap_err(format!(
+            generate_base16_schemes_from_image(&image, backend, theme).wrap_err(format!(
                 "Could not generate base16 scheme from image: {}",
                 path
             ))?
@@ -195,7 +225,7 @@ pub fn generate_base16_schemes(source: &Source, backend: Backend) -> Result<Sche
         Source::WebImage { url } => {
             let bytes = reqwest::blocking::get(url)?.bytes()?;
             let image = image::load_from_memory(&bytes)?.to_rgb8();
-            generate_base16_schemes_from_image(&image, backend).wrap_err(format!(
+            generate_base16_schemes_from_image(&image, backend, theme).wrap_err(format!(
                 "Could not generate base16 scheme from image: {}",
                 url
             ))?
@@ -207,11 +237,13 @@ pub fn generate_base16_schemes(source: &Source, backend: Backend) -> Result<Sche
 pub fn generate_base16_schemes_from_image(
     image: &RgbImage,
     backend: Backend,
+    theme: Option<&Theme>,
 ) -> Result<Schemes, Report> {
-    let palette = backend.create().extract(&image);
+    let palette = backend.create().extract(image);
+    let neutral = theme.map(|t| &t.palettes.neutral);
 
-    let dark_scheme = generate_base16_scheme_from_palette(&palette, true)?;
-    let light_scheme = generate_base16_scheme_from_palette(&palette, false)?;
+    let dark_scheme = generate_base16_scheme_from_palette(&palette, neutral, true)?;
+    let light_scheme = generate_base16_scheme_from_palette(&palette, neutral, false)?;
 
     Ok(Schemes {
         dark: dark_scheme,

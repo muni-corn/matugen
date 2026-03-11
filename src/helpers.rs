@@ -135,6 +135,7 @@ pub fn generate_schemes_and_theme(
             generate_base16_schemes(
                 &args.source,
                 args.base16_backend.clone().unwrap_or(Backend::Wal),
+                theme.as_ref(),
             )
             .wrap_err("Failed to generate base16 color schemes.")?,
         ),
