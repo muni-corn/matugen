@@ -137,10 +137,18 @@ pub struct ImageCache {
     pub stype: SchemeTypes,
     source: Option<PathBuf>,
     cache_folder: PathBuf,
+    /// Short discriminator appended to the filename to bust the cache when
+    /// options that affect base16 output change (backend, harmonization).
+    options_suffix: String,
 }
 
 impl ImageCache {
-    pub fn new(source: &Source, stype: SchemeTypes) -> Self {
+    /// Creates an image cache handle.
+    ///
+    /// `options_suffix` is appended to the filename so that different
+    /// combinations of `--base16-backend` and `--base16-harmonize` each get
+    /// their own cache file rather than sharing one.
+    pub fn new(source: &Source, stype: SchemeTypes, options_suffix: String) -> Self {
         let pathbuf = match source {
             Source::Image { path } => Some(PathBuf::from(path)),
             _ => None,
@@ -155,6 +163,7 @@ impl ImageCache {
             stype,
             source: pathbuf,
             cache_folder,
+            options_suffix,
         }
     }
 
@@ -210,7 +219,8 @@ impl ImageCache {
     }
 
     fn get_name(&self) -> PathBuf {
-        let name = format!(
+        let name = if self.options_suffix.is_empty() {
+            format!(
             "{}.{}.{:?}.json",
             self.source
                 .as_ref()
@@ -220,7 +230,21 @@ impl ImageCache {
                 .to_string_lossy(),
             &self.hash.as_ref().unwrap(),
             &self.stype
-        );
+            )
+        } else {
+            format!(
+                "{}.{}.{:?}.{}.json",
+                self.source
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy(),
+                self.hash.as_ref().unwrap(),
+                self.stype,
+                self.options_suffix,
+            )
+        };
 
         PathBuf::from(name)
     }

@@ -15,7 +15,7 @@ mod wallpaper;
 
 use crate::{
     cache::ImageCache,
-    color::{base16::Backend, color::{Source, get_filter, get_scored_colors_from_image}},
+    color::{base16::{Backend, Harmonization}, color::{Source, get_filter, get_scored_colors_from_image}},
     helpers::{
         apply_opacity_to_schemes, generate_schemes_and_theme, get_syntax, json_from_file,
         merge_json, merge_json_source, parse_fallback_color,
@@ -73,7 +73,25 @@ impl State {
 
         config_file.parse_cli_overrides(&args);
 
-        let image_cache = ImageCache::new(&args.source, args.r#type);
+        // build a cache key suffix that encodes options affecting base16 output
+        let harmonization: Harmonization = args
+            .base16_harmonize
+            .clone()
+            .or_else(|| config_file.config.base16_harmonize.clone())
+            .unwrap_or_default();
+        let backend_label = match args.base16_backend.as_ref().unwrap_or(&Backend::Wal) {
+            Backend::Wal => "wal",
+            Backend::Celebi => "celebi",
+        };
+        let harmonization_label = match harmonization {
+            Harmonization::None => "none",
+            Harmonization::Light => "light",
+            Harmonization::Moderate => "moderate",
+            Harmonization::Strong => "strong",
+        };
+        let options_suffix = format!("{backend_label}.{harmonization_label}");
+
+        let image_cache = ImageCache::new(&args.source, args.r#type, options_suffix);
 
         let mut loaded_cache = false;
 
