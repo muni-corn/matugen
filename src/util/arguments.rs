@@ -2,7 +2,10 @@ use clap::{ArgAction, Parser};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, ops::RangeBounds, path::PathBuf};
 
-use crate::{color::base16::Backend, SchemesEnum};
+use crate::{
+    color::base16::{Backend, Harmonization},
+    SchemesEnum,
+};
 
 #[derive(Parser, Clone)]
 #[command(version, long_about = None)]
@@ -104,6 +107,12 @@ pub struct Cli {
     /// Backend to use for base16 color scheme generation
     #[arg(value_enum, short, long, global = true)]
     pub base16_backend: Option<Backend>,
+
+    /// Strength of hue blending applied to base16 accents toward the Material
+    /// You source color. none preserves image fidelity; strong maximizes
+    /// palette cohesion.
+    #[arg(value_enum, long, global = true)]
+    pub base16_harmonize: Option<Harmonization>,
 
     #[cfg(feature = "filter-docs")]
     /// Outputs filter documentation in HTML format

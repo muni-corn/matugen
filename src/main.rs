@@ -711,6 +711,7 @@ fn main() -> Result<(), Report> {
         prefer: None,
         old_json_output: Some(false),
         base16_backend: Some(Backend::Wal),
+        base16_harmonize: None,
         #[cfg(feature = "filter-docs")]
         filter_docs_html: Some(false),
         lightness_dark: Some(0.0),
