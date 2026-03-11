@@ -1,6 +1,8 @@
+
+
 use crate::{
     color::{
-        backend::wal::WalBackend,
+        backend::{celebi::CelebiBackend, wal::WalBackend},
         color::{get_source_color_from_color, ColorFormat, Source},
         format::{argb_from_rgb, rgb_from_argb},
         math::{luminance, saturation},
@@ -45,13 +47,17 @@ const ACCENT_NAMES: [&str; 8] = [
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum Backend {
+    /// K-means clustering in RGB space (original wal-inspired extractor).
     Wal,
+    /// Material You's own QuantizerCelebi (Wu + WSMeans) extractor.
+    Celebi,
 }
 
 impl Backend {
     pub fn create(&self) -> Box<dyn PaletteBackend> {
         match self {
             Backend::Wal => Box::new(WalBackend::default()),
+            Backend::Celebi => Box::new(CelebiBackend::default()),
         }
     }
 }
