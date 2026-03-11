@@ -19,6 +19,7 @@ use material_colors::{
     utils::math::{difference_degrees, rotate_direction, sanitize_degrees_double},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// Strength of hue blending applied to extracted accent colors toward the
 /// Material You source color. Higher harmonization reduces jarring color
@@ -72,10 +73,37 @@ fn drag_hue(source_hue: f64, target_hue: f64, amount: f64) -> f64 {
     sanitize_degrees_double(rot_deg.mul_add(rot_dir, source_hue))
 }
 
+/// Blends `accent` hue toward `source` hue by at most `max_degrees`.
+///
+/// Mirrors the formula used by `material_colors::blend::harmonize` but with
+/// a configurable ceiling instead of the fixed 15° cap.
+fn harmonize_hue(accent: Argb, source: Argb, max_degrees: f64) -> Argb {
+    let accent_hct: Hct = accent.into();
+    let source_hct: Hct = source.into();
+
+    let diff = difference_degrees(accent_hct.get_hue(), source_hct.get_hue());
+    let rotation = (diff * 0.5).min(max_degrees);
+    let direction = rotate_direction(accent_hct.get_hue(), source_hct.get_hue());
+    let new_hue = sanitize_degrees_double(rotation.mul_add(direction, accent_hct.get_hue()));
+
+    Hct::from(new_hue, accent_hct.get_chroma(), accent_hct.get_tone()).into()
+}
+
+/// Applies the requested harmonization level to a single accent color.
+fn apply_harmonization(accent: Argb, source: Argb, harmonization: &Harmonization) -> Argb {
+    match harmonization {
+        Harmonization::None => accent,
+        Harmonization::Light => harmonize_hue(accent, source, 15.0),
+        Harmonization::Moderate => harmonize_hue(accent, source, 30.0),
+        Harmonization::Strong => harmonize_hue(accent, source, 45.0),
+    }
+}
+
 pub fn generate_base16_scheme_from_palette(
     palette: &[Rgb],
     neutral: Option<&TonalPalette>,
     source_color: Option<Argb>,
+    harmonization: &Harmonization,
     dark: bool,
 ) -> Result<IndexMap<String, Argb>, Report> {
     let mut scheme = IndexMap::new();
@@ -97,9 +125,9 @@ pub fn generate_base16_scheme_from_palette(
         scheme.insert(name.to_string(), gray_ramp[i]);
     }
 
-    let accents = assign_accents(palette, source_color, dark);
-    for (i, &name) in ACCENT_NAMES.iter().enumerate() {
-        scheme.insert(name.to_string(), accents[i]);
+    let accents = assign_accents(palette, source_color, harmonization, dark);
+    for (name, color) in ACCENT_NAMES.iter().zip(accents) {
+        scheme.insert(name.to_string(), color);
     }
 
     Ok(scheme)
@@ -212,66 +240,89 @@ const ACCENT_SLOTS: [AccentSlot; 8] = [
 ];
 
 /// Assigns the eight accent colors (base08–base0F) from a raw palette using
-/// hue-targeted bucketing.
+/// hue-targeted bucketing, then optionally harmonizes them toward the Material
+/// You source color.
 ///
 /// For each base16 accent slot the palette is searched for the chromatic color
 /// whose HCT hue falls within the slot's range; among candidates the one with
 /// the highest chroma wins. When no candidate exists a color is synthesized
 /// from the source color's chroma and the slot's target hue. All accents are
-/// then tone-normalized for readability.
-fn assign_accents(palette: &[Rgb], source_color: Option<Argb>, dark: bool) -> [Argb; 8] {
-    // minimum chroma to be considered a chromatic (non-neutral) color
-    const MIN_CHROMA: f64 = 12.0;
-    // chroma to use when synthesising a completely new accent
-    const SYNTH_CHROMA: f64 = 48.0;
-    // clamp range for extracted chroma so accents are not too washed out/vivid
-    const CHROMA_MIN: f64 = 20.0;
-    const CHROMA_MAX: f64 = 80.0;
-
-    // derive a fallback source HCT so synthesised colors inherit source style
-    let source_hct: Hct = source_color.unwrap_or(Argb::new(255, 128, 128, 128)).into();
-    let source_chroma = source_hct.get_chroma().clamp(SYNTH_CHROMA, CHROMA_MAX);
-
+/// then tone-normalized for readability before harmonization is applied.
+fn assign_accents(
+    palette: &[Rgb],
+    source_color: Option<Argb>,
+    harmonization: &Harmonization,
+    dark: bool,
+) -> [Argb; 8] {
     // pre-convert palette to HCT once
-    let hct_palette: Vec<Hct> = palette.iter().map(|c| argb_from_rgb(c).into()).collect();
+    let hct_palette: Vec<Hct> = palette
+        .iter()
+        .map(|c| argb_from_rgb(c).into())
+        .filter(|c: &Hct| c.get_chroma() >= 20.)
+        .collect();
 
-    let slots = ACCENT_SLOTS;
-    let mut out = [Argb::new(255, 0, 0, 0); 8];
+    // a map from a base16 name to the given palette, colors sorted by the difference in hue from that of target accent slot.
+    let mut leaderboards = ACCENT_NAMES
+        .iter()
+        .zip(ACCENT_SLOTS.iter())
+        .map(|(name, slot)| {
+            // pair each color with its score: the difference in degrees from the target hue
+            let mut palette_scores = hct_palette
+                .iter()
+                .map(|hct| {
+                    // multiplying by 10000 lets us cast this float to an integer with a precision of 4 decimal points
+                    let score =
+                        (difference_degrees(hct.get_hue(), slot.hue_center) * 10000.) as i64;
 
-    for (idx, slot) in slots.iter().enumerate() {
-        let target_tone = if dark {
-            slot.tone_dark
-        } else {
-            slot.tone_light
-        };
-        let target_chroma = slot.chroma_hint.unwrap_or(source_chroma);
+                    // modify the chroma of this color if the slot has a chroma_hint
+                    let final_chroma = if let Some(c) = slot.chroma_factor {
+                        hct.get_chroma() * c
+                    } else {
+                        hct.get_chroma()
+                    };
 
-        // find the most chromatic candidate in this hue bucket
-        let best = hct_palette
-            .iter()
-            .filter(|h| h.get_chroma() >= MIN_CHROMA)
-            .filter(|h| hue_in_range(h.get_hue(), slot.hue_min, slot.hue_max))
-            .max_by(|a, b| {
-                a.get_chroma()
-                    .partial_cmp(&b.get_chroma())
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            });
+                    // modify the tone if it is too dark or too bright
+                    let final_tone = if dark {
+                        hct.get_tone().max(50.)
+                    } else {
+                        hct.get_tone().min(50.)
+                    };
 
-        let (hue, chroma) = match best {
-            Some(h) => {
-                // keep the extracted hue; clamp chroma to a sane range
-                let c = if slot.chroma_hint.is_some() {
-                    slot.chroma_hint.unwrap()
-                } else {
-                    h.get_chroma().clamp(CHROMA_MIN, CHROMA_MAX)
-                };
-                (h.get_hue(), c)
+                    let final_hct = Hct::from(hct.get_hue(), final_chroma, final_tone);
+
+                    (final_hct, score)
+                })
+                .collect::<Vec<_>>();
+
+            palette_scores.sort_by_key(|(_, score)| *score);
+
+            (*name, palette_scores)
+        })
+        .collect::<Vec<_>>();
+
+    // now, sort so that we address the scores that have the smallest differences first
+    leaderboards.sort_by_key(|(_, palette_scores)| {
+        *palette_scores
+            .first()
+            .map(|(_, score)| score)
+            .unwrap_or(&i64::MAX)
+    });
+
+    // finally, we assign colors to names
+    let mut assignments = HashMap::new();
+    let mut colors_used = HashSet::new(); // keeps track of colors that already have an assignement
+    for (name, palette_scores) in leaderboards.into_iter() {
+        if let Some((color_to_assign, _)) = palette_scores
+            .into_iter()
+            .find(|(hct, _)| !colors_used.contains(&hct.to_string()))
+        {
+            let mut argb = Argb::from(color_to_assign);
+            if let Some(src) = source_color {
+                argb = apply_harmonization(argb, src, harmonization);
             }
-            // no image color in this hue range — synthesize from slot center
-            None => (slot.hue_center, target_chroma),
-        };
-
-        out[idx] = Hct::from(hue, chroma, target_tone).into();
+            assignments.insert(name, argb);
+            colors_used.insert(color_to_assign.to_string());
+        }
     }
 
     ACCENT_NAMES.map(|name| assignments.remove(name).unwrap_or_default())
@@ -322,6 +373,7 @@ pub fn generate_base16_schemes(
     source: &Source,
     backend: Backend,
     theme: Option<&Theme>,
+    harmonization: &Harmonization,
 ) -> Result<Schemes, Report> {
     let schemes = match source {
         Source::Json { path: _ } => unreachable!(),
@@ -330,10 +382,9 @@ pub fn generate_base16_schemes(
                 .with_guessed_format()?
                 .decode()?
                 .to_rgb8();
-            generate_base16_schemes_from_image(&image, backend, theme).wrap_err(format!(
-                "Could not generate base16 scheme from image: {}",
-                path
-            ))?
+            generate_base16_schemes_from_image(&image, backend, theme, harmonization).wrap_err(
+                format!("Could not generate base16 scheme from image: {}", path),
+            )?
         }
         Source::Color(color) => generate_base16_schemes_from_color(color).wrap_err(format!(
             "Could not generate base16 scheme from color: {}",
@@ -343,26 +394,27 @@ pub fn generate_base16_schemes(
         Source::WebImage { url } => {
             let bytes = reqwest::blocking::get(url)?.bytes()?;
             let image = image::load_from_memory(&bytes)?.to_rgb8();
-            generate_base16_schemes_from_image(&image, backend, theme).wrap_err(format!(
-                "Could not generate base16 scheme from image: {}",
-                url
-            ))?
+            generate_base16_schemes_from_image(&image, backend, theme, harmonization).wrap_err(
+                format!("Could not generate base16 scheme from image: {}", url),
+            )?
         }
     };
     Ok(schemes)
 }
-
 pub fn generate_base16_schemes_from_image(
     image: &RgbImage,
     backend: Backend,
     theme: Option<&Theme>,
+    harmonization: &Harmonization,
 ) -> Result<Schemes, Report> {
     let palette = backend.create().extract(image);
     let neutral = theme.map(|t| &t.palettes.neutral);
     let source_color = theme.map(|t| t.source);
 
-    let dark_scheme = generate_base16_scheme_from_palette(&palette, neutral, source_color, true)?;
-    let light_scheme = generate_base16_scheme_from_palette(&palette, neutral, source_color, false)?;
+    let dark_scheme =
+        generate_base16_scheme_from_palette(&palette, neutral, source_color, harmonization, true)?;
+    let light_scheme =
+        generate_base16_scheme_from_palette(&palette, neutral, source_color, harmonization, false)?;
 
     Ok(Schemes {
         dark: dark_scheme,

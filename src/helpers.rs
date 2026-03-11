@@ -136,6 +136,9 @@ pub fn generate_schemes_and_theme(
                 &args.source,
                 args.base16_backend.clone().unwrap_or(Backend::Wal),
                 theme.as_ref(),
+                // harmonization will be wired from CLI/config in a later commit;
+                // default to Light for now
+                &Default::default(),
             )
             .wrap_err("Failed to generate base16 color schemes.")?,
         ),
