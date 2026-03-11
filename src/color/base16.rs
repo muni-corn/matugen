@@ -1,7 +1,3 @@
-
-
-
-
 use crate::{
     color::{
         backend::{celebi::CelebiBackend, wal::WalBackend},
@@ -79,6 +75,7 @@ fn drag_hue(source_hue: f64, target_hue: f64, amount: f64) -> f64 {
 pub fn generate_base16_scheme_from_palette(
     palette: &[Rgb],
     neutral: Option<&TonalPalette>,
+    source_color: Option<Argb>,
     dark: bool,
 ) -> Result<IndexMap<String, Argb>, Report> {
     let mut scheme = IndexMap::new();
@@ -100,12 +97,9 @@ pub fn generate_base16_scheme_from_palette(
         scheme.insert(name.to_string(), gray_ramp[i]);
     }
 
-    let sorted = palette.to_vec();
-    let mut accents: Vec<&Rgb> = sorted.iter().collect();
-    accents.sort_by(|a, b| saturation(a).partial_cmp(&saturation(b)).unwrap());
-
+    let accents = assign_accents(palette, source_color, dark);
     for (i, &name) in ACCENT_NAMES.iter().enumerate() {
-        scheme.insert(name.to_string(), argb_from_rgb(accents[i % accents.len()]));
+        scheme.insert(name.to_string(), accents[i]);
     }
 
     Ok(scheme)
@@ -157,6 +151,130 @@ pub fn generate_base16_scheme_from_color(
     }
 
     Ok(scheme)
+}
+
+/// One of the eight base16 accent slots with its target hue window.
+///
+/// `hue_min` and `hue_max` are in HCT degrees (0–360). For red the range
+/// wraps through 0°, so `hue_min > hue_max` is the wrap-around sentinel.
+struct AccentSlot {
+    hue_center: f64,
+
+    /// If `Some`, multiply the original color's chroma by this amount
+    chroma_factor: Option<f64>,
+}
+
+/// The eight accent slot definitions for base08–base0F in HCT hue order.
+///
+/// Hue ranges are based on the Munsell/CAM16 color wheel as implemented in
+/// HCT. base0F (brown) is a low-chroma warm color rather than a distinct hue.
+const ACCENT_SLOTS: [AccentSlot; 8] = [
+    // base08 – red (variables, diff deleted)
+    AccentSlot {
+        hue_center: 10.0,
+        chroma_factor: None,
+    },
+    // base09 – orange (integers, constants)
+    AccentSlot {
+        hue_center: 40.0,
+        chroma_factor: None,
+    },
+    // base0A – yellow (classes, search highlight)
+    AccentSlot {
+        hue_center: 65.0,
+        chroma_factor: None,
+    },
+    // base0B – green (strings, diff inserted)
+    AccentSlot {
+        hue_center: 115.0,
+        chroma_factor: None,
+    },
+    // base0C – cyan (regex, escape characters)
+    AccentSlot {
+        hue_center: 185.0,
+        chroma_factor: None,
+    },
+    // base0D – blue (functions, methods)
+    AccentSlot {
+        hue_center: 245.0,
+        chroma_factor: None,
+    },
+    // base0E – purple/magenta (keywords, diff changed)
+    AccentSlot {
+        hue_center: 295.0,
+        chroma_factor: None,
+    },
+    // base0F – brown/deprecated (low chroma, warm hue)
+    AccentSlot {
+        hue_center: 25.0,
+        chroma_factor: Some(0.5), // intentionally muted
+    },
+];
+
+/// Assigns the eight accent colors (base08–base0F) from a raw palette using
+/// hue-targeted bucketing.
+///
+/// For each base16 accent slot the palette is searched for the chromatic color
+/// whose HCT hue falls within the slot's range; among candidates the one with
+/// the highest chroma wins. When no candidate exists a color is synthesized
+/// from the source color's chroma and the slot's target hue. All accents are
+/// then tone-normalized for readability.
+fn assign_accents(palette: &[Rgb], source_color: Option<Argb>, dark: bool) -> [Argb; 8] {
+    // minimum chroma to be considered a chromatic (non-neutral) color
+    const MIN_CHROMA: f64 = 12.0;
+    // chroma to use when synthesising a completely new accent
+    const SYNTH_CHROMA: f64 = 48.0;
+    // clamp range for extracted chroma so accents are not too washed out/vivid
+    const CHROMA_MIN: f64 = 20.0;
+    const CHROMA_MAX: f64 = 80.0;
+
+    // derive a fallback source HCT so synthesised colors inherit source style
+    let source_hct: Hct = source_color.unwrap_or(Argb::new(255, 128, 128, 128)).into();
+    let source_chroma = source_hct.get_chroma().clamp(SYNTH_CHROMA, CHROMA_MAX);
+
+    // pre-convert palette to HCT once
+    let hct_palette: Vec<Hct> = palette.iter().map(|c| argb_from_rgb(c).into()).collect();
+
+    let slots = ACCENT_SLOTS;
+    let mut out = [Argb::new(255, 0, 0, 0); 8];
+
+    for (idx, slot) in slots.iter().enumerate() {
+        let target_tone = if dark {
+            slot.tone_dark
+        } else {
+            slot.tone_light
+        };
+        let target_chroma = slot.chroma_hint.unwrap_or(source_chroma);
+
+        // find the most chromatic candidate in this hue bucket
+        let best = hct_palette
+            .iter()
+            .filter(|h| h.get_chroma() >= MIN_CHROMA)
+            .filter(|h| hue_in_range(h.get_hue(), slot.hue_min, slot.hue_max))
+            .max_by(|a, b| {
+                a.get_chroma()
+                    .partial_cmp(&b.get_chroma())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+        let (hue, chroma) = match best {
+            Some(h) => {
+                // keep the extracted hue; clamp chroma to a sane range
+                let c = if slot.chroma_hint.is_some() {
+                    slot.chroma_hint.unwrap()
+                } else {
+                    h.get_chroma().clamp(CHROMA_MIN, CHROMA_MAX)
+                };
+                (h.get_hue(), c)
+            }
+            // no image color in this hue range — synthesize from slot center
+            None => (slot.hue_center, target_chroma),
+        };
+
+        out[idx] = Hct::from(hue, chroma, target_tone).into();
+    }
+
+    ACCENT_NAMES.map(|name| assignments.remove(name).unwrap_or_default())
 }
 
 fn interpolate_grays(base00: &Rgb, base05: &Rgb, dark: bool) -> Vec<Argb> {
@@ -241,9 +359,10 @@ pub fn generate_base16_schemes_from_image(
 ) -> Result<Schemes, Report> {
     let palette = backend.create().extract(image);
     let neutral = theme.map(|t| &t.palettes.neutral);
+    let source_color = theme.map(|t| t.source);
 
-    let dark_scheme = generate_base16_scheme_from_palette(&palette, neutral, true)?;
-    let light_scheme = generate_base16_scheme_from_palette(&palette, neutral, false)?;
+    let dark_scheme = generate_base16_scheme_from_palette(&palette, neutral, source_color, true)?;
+    let light_scheme = generate_base16_scheme_from_palette(&palette, neutral, source_color, false)?;
 
     Ok(Schemes {
         dark: dark_scheme,
