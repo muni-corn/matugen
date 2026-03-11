@@ -16,6 +16,24 @@ use material_colors::{
     hct::Hct,
     utils::math::{difference_degrees, rotate_direction, sanitize_degrees_double},
 };
+use serde::{Deserialize, Serialize};
+
+/// Strength of hue blending applied to extracted accent colors toward the
+/// Material You source color. Higher harmonization reduces jarring color
+/// clashes at the cost of rainbow diversity.
+#[derive(Debug, Clone, Default, clap::ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Harmonization {
+    /// No blending; accent hues are used exactly as extracted or synthesized.
+    None,
+    /// Gentle blend of up to 15° toward the source hue (default).
+    #[default]
+    Light,
+    /// Stronger blend of up to 30° toward the source hue.
+    Moderate,
+    /// Strongest blend of up to 45° toward the source hue.
+    Strong,
+}
 
 const GRAY_NAMES: [&str; 8] = [
     "base00", "base01", "base02", "base03", "base04", "base05", "base06", "base07",
