@@ -112,8 +112,8 @@ pub fn generate_base16_scheme_from_palette(
     // the ramp matches the palette the user sees in Material You output.
     // Falls back to linear RGB interpolation when no theme is available.
     let (base00, base05) = if let Some(s) = material_scheme {
-        let base00 = s.on_primary_fixed;
-        let base05 = s.primary_fixed;
+        let base00 = s.surface_container_lowest;
+        let base05 = s.primary;
 
         (rgb_from_argb(base00), rgb_from_argb(base05))
     } else {
@@ -124,7 +124,7 @@ pub fn generate_base16_scheme_from_palette(
         (base00, base05)
     };
 
-    let gray_ramp = interpolate_grays(&base00, &base05, dark);
+    let gray_ramp = interpolate_grays(&base00, &base05);
 
     for (name, color) in GRAY_NAMES.iter().zip(gray_ramp) {
         scheme.insert(name.to_string(), color);
@@ -146,10 +146,13 @@ pub fn generate_base16_scheme_from_color(
 
     let hsl: Hsl = color.into();
     let (source_hue, source_sat, source_lit) = (hsl.hue(), hsl.saturation(), hsl.lightness());
-    let base00: Rgb = Hsl::new(source_hue, source_sat * 0.3, source_lit * 1.5, None).into();
-    let base05: Rgb = Hsl::new(source_hue, source_sat * 0.7, source_lit * 0.2, None).into();
 
-    let gray_ramp = interpolate_grays(&base00, &base05, dark);
+    let dim: Rgb = Hsl::new(source_hue, source_sat * 0.3, source_lit * 1.5, None).into();
+    let bright: Rgb = Hsl::new(source_hue, source_sat * 0.7, source_lit * 0.2, None).into();
+
+    let (base00, base05) = if dark { (dim, bright) } else { (bright, dim) };
+
+    let gray_ramp = interpolate_grays(&base00, &base05);
     for (i, &name) in GRAY_NAMES.iter().enumerate() {
         scheme.insert(name.to_string(), gray_ramp[i]);
     }
@@ -333,27 +336,24 @@ fn assign_accents(
     ACCENT_NAMES.map(|name| assignments.remove(name).unwrap_or_default())
 }
 
-fn interpolate_grays(base00: &Rgb, base05: &Rgb, dark: bool) -> Vec<Argb> {
+fn interpolate_grays(base00: &Rgb, base05: &Rgb) -> Vec<Argb> {
     let mut grays = Vec::new();
     let n = GRAY_NAMES.len();
 
     for i in 0..n {
-        // we want to interpolate for 8 colors, but we're only given base00 and base05 (so there's only 4 colors in between them). therefore, to interpolate for base06 and base07, our denominator here needs to be 6 to correctly interpolate from base00 to base05 to base07.
-        let t = i as f32 / 6.;
+        // we want to interpolate for 8 colors, but we're only given base00 and base05. therefore, to interpolate for base06 and base07, our denominator here needs to be 6 to correctly interpolate from base00 to base05 to base07.
+        let t = i as f64 / 6.;
 
-        let r = base00.red() as f32 + t * (base05.red() as f32 - base00.red() as f32);
-        let g = base00.green() as f32 + t * (base05.green() as f32 - base00.green() as f32);
-        let b = base00.blue() as f32 + t * (base05.blue() as f32 - base00.blue() as f32);
+        let r = base00.red() + t * (base05.red() - base00.red());
+        let g = base00.green() + t * (base05.green() - base00.green());
+        let b = base00.blue() + t * (base05.blue() - base00.blue());
+
         grays.push(Argb::new(
             255,
             r.round().min(255.) as u8,
             g.round().min(255.) as u8,
             b.round().min(255.) as u8,
         ));
-    }
-
-    if !dark {
-        grays.reverse();
     }
 
     grays
