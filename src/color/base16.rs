@@ -124,8 +124,10 @@ pub fn generate_base16_scheme_from_palette(
         (base00, base05)
     };
 
-    for (i, &name) in GRAY_NAMES.iter().enumerate() {
-        scheme.insert(name.to_string(), gray_ramp[i]);
+    let gray_ramp = interpolate_grays(&base00, &base05, dark);
+
+    for (name, color) in GRAY_NAMES.iter().zip(gray_ramp) {
+        scheme.insert(name.to_string(), color);
     }
 
     let accents = assign_accents(palette, source_color, harmonization, dark);
@@ -336,19 +338,21 @@ fn interpolate_grays(base00: &Rgb, base05: &Rgb, dark: bool) -> Vec<Argb> {
     let n = GRAY_NAMES.len();
 
     for i in 0..n {
-        let t = i as f32 / (n - 1) as f32;
+        // we want to interpolate for 8 colors, but we're only given base00 and base05 (so there's only 4 colors in between them). therefore, to interpolate for base06 and base07, our denominator here needs to be 6 to correctly interpolate from base00 to base05 to base07.
+        let t = i as f32 / 6.;
+
         let r = base00.red() as f32 + t * (base05.red() as f32 - base00.red() as f32);
         let g = base00.green() as f32 + t * (base05.green() as f32 - base00.green() as f32);
         let b = base00.blue() as f32 + t * (base05.blue() as f32 - base00.blue() as f32);
         grays.push(Argb::new(
             255,
-            r.round() as u8,
-            g.round() as u8,
-            b.round() as u8,
+            r.round().min(255.) as u8,
+            g.round().min(255.) as u8,
+            b.round().min(255.) as u8,
         ));
     }
 
-    if dark {
+    if !dark {
         grays.reverse();
     }
 
