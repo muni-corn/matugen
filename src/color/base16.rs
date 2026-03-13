@@ -113,7 +113,7 @@ pub fn generate_base16_scheme_from_palette(
     // Falls back to linear RGB interpolation when no theme is available.
     let (base00, base05) = if let Some(s) = material_scheme {
         let base00 = s.surface_container_lowest;
-        let base05 = s.primary;
+        let base05 = s.on_primary_container;
 
         (rgb_from_argb(base00), rgb_from_argb(base05))
     } else {
